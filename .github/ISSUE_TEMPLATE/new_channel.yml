@@ -1,0 +1,50 @@
+name: New channel
+description: Request (or offer to build) an adapter for a new destination.
+title: "channel: "
+labels: [channel]
+body:
+  - type: input
+    id: service
+    attributes:
+      label: Service
+      placeholder: e.g. Matrix, Pushover, Twilio SMS
+    validations:
+      required: true
+
+  - type: input
+    id: docs
+    attributes:
+      label: API documentation link
+    validations:
+      required: true
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: How do you send a message?
+      options:
+        - HTTP request with a token / secret URL
+        - HTTP request needing OAuth or request signing
+        - Vendor SDK required
+        - Persistent connection (IRC, XMPP, websocket)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: limits
+    attributes:
+      label: Known limits and quirks
+      description: Rate limits, message length, formatting (HTML/Markdown), idempotency support, error codes.
+
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Your use case
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd like to implement this adapter myself

@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a change to the core library (routing, templates, delivery, API).
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: Want a new destination (Slack, SMS, ...)? Use the **New channel** template instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and why is it hard today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API or behavior
+      description: Sketch how you'd like to use it.
+      render: go
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

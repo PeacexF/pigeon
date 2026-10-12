@@ -1,0 +1,49 @@
+name: Bug report
+description: Something doesn't work as documented.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest Go snippet that shows the problem. Remove tokens, chat IDs and webhook URLs.
+      render: go
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: pigeon version
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+
+  - type: input
+    id: go
+    attributes:
+      label: Go version
+      placeholder: output of `go version`
+    validations:
+      required: true
+
+  - type: input
+    id: channel
+    attributes:
+      label: Channel(s) involved
+      placeholder: telegram, webhook, ...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / errors
+      description: Redact secrets before pasting.
+      render: text

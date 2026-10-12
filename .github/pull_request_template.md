@@ -16,8 +16,10 @@
 
 ## Checklist
 
-* [ ] Tests pass
-* [ ] Documentation updated if needed
+* [ ] `make check` passes
+* [ ] Tests added or updated for the change
+* [ ] Documentation and `CHANGELOG.md` updated if needed
+* [ ] No new third-party dependencies in the root module
 * [ ] Changes follow the project's existing style
 * [ ] No unrelated changes are included
 

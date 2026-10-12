@@ -8,8 +8,8 @@ Thumbs.db
 ehthumbs.db
 __pycache__/
 venv/
-context/
-context*
+/context/
+/context*
 sqlite.db
 logs
 *.log
@@ -32,3 +32,16 @@ dist-ssr
 *.sln
 *.sw?
 notes/
+
+# Go
+/bin/
+*.test
+*.out
+*.prof
+coverage.*
+go.work
+go.work.sum
+
+# Secrets
+.env
+.env.*
