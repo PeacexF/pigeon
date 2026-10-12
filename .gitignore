@@ -7,10 +7,6 @@ Icon
 Thumbs.db
 ehthumbs.db
 __pycache__/
-main
-server
-collector
-websocket
 venv/
 context/
 context*
