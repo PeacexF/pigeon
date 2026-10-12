@@ -1,6 +1,6 @@
 MODULES := $(shell find . -name go.mod -not -path './.git/*' -exec dirname {} \; | sort)
 
-GOLANGCI_LINT_VERSION ?= v2.13.2
+GOLANGCI_LINT_VERSION ?= v2.14.0
 GOVULNCHECK_VERSION   ?= v1.9.0
 
 # Repo-local so tools are built with this repo's Go; golangci-lint refuses newer-Go modules otherwise.

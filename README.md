@@ -7,9 +7,17 @@
 A notification gate for Go. Your application emits events; pigeon decides which channels hear about them, renders the message, and delivers it with retries, rate limiting and deduplication.
 
 > [!WARNING]
-> **Not ready for use.** pigeon is in early development and has no released version yet. The API below is the design target and will change.
+> **Pre-release.** The API may change until `v1.0.0`.
 
-## The idea
+## Install
+
+```sh
+go get github.com/PeacexF/pigeon
+```
+
+Requires Go 1.27+. The core module has no third-party dependencies.
+
+## Quick start
 
 ```go
 p, err := pigeon.New(
@@ -19,9 +27,9 @@ p, err := pigeon.New(
     pigeon.WithTemplate("alert.*", "🚨 {{.Data.host}}: {{.Data.msg}}"),
 )
 if err != nil {
-    log.Fatal(err)
+    log.Fatal(err) // every config problem, reported at once
 }
-defer p.Close(ctx)
+defer p.Close(ctx) // waits for pending deliveries
 
 id, err := p.Send(ctx, pigeon.Event{
     Type:           "alert.disk",
@@ -30,25 +38,94 @@ id, err := p.Send(ctx, pigeon.Event{
 })
 ```
 
-- **Events, not messages.** Apps say *what happened*; routes decide *who hears about it*.
-- **Any destination.** A channel is a one-method interface. Telegram first; Discord, Slack, webhooks, email and more to follow.
-- **Reliable by default.** Retries with backoff and jitter, permanent-vs-retryable errors, per-channel rate limits, idempotency keys, dead-letter hooks.
-- **Zero dependencies.** The core module uses only the standard library. Integrations that need third-party packages (Postgres queue, Prometheus, ...) live in separate modules.
-- **Durable when you need it.** Start in-memory; switch to a Postgres-backed queue without changing calling code.
+Runnable programs: [`examples/basic`](examples/basic) (no network) and [`examples/telegram`](examples/telegram).
+
+## Concepts
+
+| | |
+|---|---|
+| **Event** | What happened: a dotted `Type`, a `Data` map, an optional `IdempotencyKey`. |
+| **Channel** | A named destination, e.g. `"ops"` → one Telegram chat. Anything implementing `Send(ctx, *Message) error`. |
+| **Route** | `pattern → channels`. `*` matches anything, dots included: `alert.*`, `*.critical`, `*`. An event goes to the union of every matching route. |
+| **Template** | A `text/template` per pattern, optionally per channel (`pigeon.For("ops")`), with an optional `pigeon.Title(...)`. Unmatched events render as their type plus `key: value` lines. |
+
+`Send` fails fast and explicitly:
+
+| Error | When |
+|---|---|
+| `ErrInvalidEvent` | The event has no `Type`. |
+| `ErrNoRoute` | No route matches the type. |
+| template error | A template references missing data. |
+| `ErrDuplicate` | The `IdempotencyKey` was used within the dedupe window (default 24h). The original event ID is returned with it. |
+| `ErrClosed` | The gateway is closed. |
+| `ctx.Err()` | The queue was full and `ctx` ended while waiting. |
+
+## Delivery guarantees
+
+- **At-least-once.** If a provider accepts a message but the response is lost, pigeon retries and the message may arrive twice. `Message.ID` stays the same across retries, so channels whose provider supports idempotency keys can use it to drop duplicates on the provider's side.
+- **Retries** use exponential backoff with full jitter (default: 5 attempts, 1s base, 5m cap). Channels mark failures `pigeon.Permanent` (never retried) or `pigeon.RetryAfter` (wait at least this long, and pause the whole channel). Anything else is retried.
+- **Rate limits** apply per channel. Adapters provide sensible defaults; Telegram's is 1 message/s per chat. Override with `pigeon.RateLimit(n, per)`.
+- **Backpressure:** the queue is bounded (`WithQueueSize`, default 1024), and `Send` blocks when it's full.
+- **The queue is in memory.** Deliveries still pending when the process exits without `Close` are lost. A durable Postgres queue is planned.
+
+Observe outcomes with `pigeon.WithHooks` (`OnAttempt`, `OnDelivered`, `OnDeadLetter`, ...) or `pigeon.WithLogger(*slog.Logger)`.
+
+## Channels
+
+| Channel | Package | Status |
+|---|---|---|
+| Telegram | [`channel/telegram`](channel/telegram) | available |
+| Any `io.Writer` | `pigeon.Writer` | available |
+| Your own function | `pigeon.ChannelFunc` | available |
+| Discord, Slack, generic webhook, SMTP, ntfy | | planned |
+
+### Telegram setup
+
+1. Message [@BotFather](https://t.me/BotFather), run `/newbot`, and copy the token.
+2. Add the bot to your group or channel (as an admin for channels).
+3. Get the chat ID: send a message in the chat, then open `https://api.telegram.org/bot<token>/getUpdates` and read `chat.id`. Group and channel IDs look like `-1001234567890`. Public channels can also use `"@channelname"`.
+
+```go
+telegram.New(token, chatID,
+    telegram.WithParseMode(telegram.ParseModeHTML), // default: plain text
+    telegram.WithSilent(),
+)
+```
+
+With a parse mode set, escape event data with `telegram.EscapeHTML` or `telegram.EscapeMarkdownV2` via `pigeon.WithTemplateFuncs`.
+
+## Testing your code
+
+`pigeontest.Recorder` is a channel that records messages and can be told to fail:
+
+```go
+rec := &pigeontest.Recorder{}
+rec.FailNext(2, errors.New("boom"))
+p, _ := pigeon.New(pigeon.WithChannel("ops", rec), pigeon.WithRoute("*", "ops"))
+p.Send(ctx, pigeon.Event{Type: "x"})
+p.Close(ctx)
+// rec.Messages(), rec.Attempts() == 3
+```
+
+## Writing a channel
+
+Implement `pigeon.Channel` (or wrap a function with `pigeon.ChannelFunc`). See [docs/writing-a-channel.md](docs/writing-a-channel.md).
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [Writing a channel](docs/writing-a-channel.md)
+- [Design decisions](docs/adr)
 
 ## Status
 
 | | |
 |---|---|
-| Core library + Telegram | 🚧 in progress |
+| Core library + Telegram | available (unreleased) |
 | Discord, Slack, webhook, SMTP, ntfy | planned |
 | Postgres queue, dead-letter replay | planned |
 | Prometheus / OpenTelemetry | planned |
 | `pigeond` HTTP gateway server | planned |
-
-## Requirements
-
-Go 1.27 or newer.
 
 ## Contributing
 

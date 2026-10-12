@@ -2,6 +2,8 @@ version: "2"
 
 run:
   tests: true
+  build-tags:
+    - integration
 
 linters:
   default: standard # errcheck, govet, ineffassign, staticcheck, unused

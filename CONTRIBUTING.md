@@ -33,11 +33,13 @@ Run `make help` to see every target. The most useful ones:
 pigeon/            core library: stdlib only, zero third-party dependencies
 ├── channel/       built-in channel adapters (telegram, ...): stdlib only
 ├── pigeontest/    helpers for testing code that uses pigeon
-├── internal/      shared plumbing, not public API
+├── internal/      implementation: one focused package per concern
 ├── contrib/       integrations with third-party deps: each is its own Go module
 ├── cmd/pigeond/   the HTTP gateway server: its own Go module
 └── docs/
 ```
+
+**Keep the root thin:** it holds only the public API. New logic goes in a focused `internal/<name>` package with its own tests.
 
 **Dependency rule:** the root module must not import any third-party package. If an integration needs one (a database driver, a vendor SDK, a metrics library), it goes in `contrib/<name>/` with its own `go.mod`.
 
@@ -52,7 +54,7 @@ Open a **New channel** issue first so we can agree on scope. A channel adapter m
 5. Be tested against `httptest.Server`. Unit tests never touch the network. Real-service tests go behind `//go:build integration`.
 6. Ship a package doc and a runnable `Example`.
 
-A full guide will live in `docs/writing-a-channel.md`.
+The full guide is [docs/writing-a-channel.md](docs/writing-a-channel.md); `channel/telegram` is the reference implementation.
 
 ## Code Style
 
