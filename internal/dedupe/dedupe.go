@@ -6,12 +6,11 @@ import (
 	"time"
 )
 
-// Window is a bounded set of keys that expire after a fixed duration. Since
-// every key lives equally long, insertion order is expiry order, so a FIFO
-// replaces a heap.
+// Window is a bounded set of expiring keys. Callers normally use one TTL,
+// so insertion order is expiry order and a FIFO replaces a heap; a key that
+// outlives one behind it is evicted late but never honored past its expiry.
 type Window struct {
 	mu      sync.Mutex
-	ttl     time.Duration
 	max     int
 	entries map[string]holder
 	order   []ref
@@ -24,21 +23,21 @@ type holder struct {
 
 type ref struct{ key, owner string }
 
-// New returns a Window keeping keys for ttl. Past max keys, the oldest are forgotten early.
-func New(ttl time.Duration, maxKeys int) *Window {
-	return &Window{ttl: ttl, max: maxKeys, entries: make(map[string]holder)}
+// New returns an empty Window. Past maxKeys keys, the oldest are forgotten early.
+func New(maxKeys int) *Window {
+	return &Window{max: maxKeys, entries: make(map[string]holder)}
 }
 
-// Reserve claims key for owner. If key is already held, it returns the
-// holder and false.
-func (w *Window) Reserve(key, owner string, now time.Time) (string, bool) {
+// Reserve claims key for owner for ttl. If key is already held, it returns
+// the holder and false.
+func (w *Window) Reserve(key, owner string, now time.Time, ttl time.Duration) (string, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.evict(now)
-	if h, ok := w.entries[key]; ok {
+	if h, ok := w.entries[key]; ok && now.Before(h.expires) {
 		return h.owner, false
 	}
-	w.entries[key] = holder{owner: owner, expires: now.Add(w.ttl)}
+	w.entries[key] = holder{owner: owner, expires: now.Add(ttl)}
 	w.order = append(w.order, ref{key, owner})
 	return owner, true
 }

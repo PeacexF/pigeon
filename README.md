@@ -64,7 +64,7 @@ Runnable programs: [`examples/basic`](examples/basic) (no network) and [`example
 
 - **At-least-once.** If a provider accepts a message but the response is lost, pigeon retries and the message may arrive twice. `Message.ID` stays the same across retries, so channels whose provider supports idempotency keys can use it to drop duplicates on the provider's side.
 - **Retries** use exponential backoff with full jitter (default: 5 attempts, 1s base, 5m cap). Channels mark failures `pigeon.Permanent` (never retried) or `pigeon.RetryAfter` (wait at least this long, and pause the whole channel). Anything else is retried.
-- **Rate limits** apply per channel. Adapters provide sensible defaults; Telegram's is 1 message/s per chat. Override with `pigeon.RateLimit(n, per)`.
+- **Rate limits** apply per channel. Adapters set defaults from the provider's documented limits (see [Channels](#channels)). Override with `pigeon.RateLimit(n, per)`.
 - **Backpressure:** the queue is bounded (`WithQueueSize`, default 1024), and `Send` blocks when it's full.
 - **The queue is in memory.** Deliveries still pending when the process exits without `Close` are lost. A durable Postgres queue is planned.
 
@@ -72,12 +72,22 @@ Observe outcomes with `pigeon.WithHooks` (`OnAttempt`, `OnDelivered`, `OnDeadLet
 
 ## Channels
 
-| Channel | Package | Status |
-|---|---|---|
-| Telegram | [`channel/telegram`](channel/telegram) | available |
-| Any `io.Writer` | `pigeon.Writer` | available |
-| Your own function | `pigeon.ChannelFunc` | available |
-| Discord, Slack, generic webhook, SMTP, ntfy | | planned |
+Every adapter lives in its own package under [`channel/`](channel) and uses only the standard library.
+
+| Channel | Constructor | Title becomes | Formatting | Length limit (cut with `…`) | Provider-side dedupe | Default rate |
+|---|---|---|---|---|---|---|
+| [Telegram](channel/telegram) | `telegram.New(token, chatID)` | first paragraph | plain text; HTML or MarkdownV2 opt-in | 4096 | — | 1/s |
+| [Discord](channel/discord) | `discord.New(webhookURL)` | embed title | Markdown | 2000; embed 256 + 4096 | — | 30/min, plus Discord's bucket headers |
+| [Slack](channel/slack) | `slack.New(webhookURL)`, `slack.NewBot(token, channel)` | header block | mrkdwn | 40,000; header 150, section 3000 | — | 1/s |
+| [Webhook](channel/webhook) | `webhook.New(url)` | `title` field | JSON payload | none | `Idempotency-Key` header | none |
+| [SMTP](channel/smtp) | `smtp.New(addr, from, to)` | subject | plain text, optional HTML part | subject 250 | stable `Message-ID` | none |
+| [ntfy](channel/ntfy) | `ntfy.New(topic)` | notification title | plain text; Markdown opt-in | 4096 bytes | — | ntfy.sh: burst 60, then 1 per 5s |
+| Any `io.Writer` | `pigeon.Writer(w)` | first line | plain text | none | — | none |
+| Your own function | `pigeon.ChannelFunc(f)` | up to you | | | | none |
+
+Each package's documentation covers setup and options. Where the provider renders markup, escape event data in templates with the package's helper, registered through `pigeon.WithTemplateFuncs`: `telegram.EscapeHTML`, `telegram.EscapeMarkdownV2`, `discord.EscapeMarkdown`, `slack.Escape`. Discord doesn't notify `@everyone` or other mentions unless you set `discord.WithMentions()`.
+
+The webhook channel refuses to connect to loopback, private and cloud-metadata addresses unless you set `webhook.WithAllowPrivate()`. It doesn't follow redirects, and it signs requests with `webhook.WithSecret`; receivers check the signature with `webhook.Verify`. See [ADR 4](docs/adr/0004-webhook-ssrf.md).
 
 ### Telegram setup
 
@@ -122,7 +132,7 @@ Implement `pigeon.Channel` (or wrap a function with `pigeon.ChannelFunc`). See [
 | | |
 |---|---|
 | Core library + Telegram | available (unreleased) |
-| Discord, Slack, webhook, SMTP, ntfy | planned |
+| Discord, Slack, webhook, SMTP, ntfy | available (unreleased) |
 | Postgres queue, dead-letter replay | planned |
 | Prometheus / OpenTelemetry | planned |
 | `pigeond` HTTP gateway server | planned |

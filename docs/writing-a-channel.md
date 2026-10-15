@@ -17,9 +17,9 @@ For one-offs, wrap a function: `pigeon.ChannelFunc(func(ctx, msg) error { ... })
    - `pigeon.Permanent(err)`: retrying can't help (bad credentials, unknown recipient, malformed request, most 4xx).
    - `pigeon.RetryAfter(err, d)`: the provider said when to come back (429 with a retry hint). This also pauses the channel.
    - Plain error: retried with backoff (timeouts, 5xx, network errors).
-3. **Never leak secrets.** Tokens often live in URLs, and `net/http` errors include the URL. Use `httpx.PostJSON(..., secrets...)` or `httpx.Redact`.
+3. **Never leak secrets.** Tokens often live in URLs, and `net/http` errors include the URL. In-tree adapters use `httpx.Post` / `httpx.PostJSON(..., secrets...)` or `httpx.Redact`.
 4. **Honor `ctx`** on every network call. pigeon sets a per-attempt deadline and cancels it on shutdown.
-5. **Cap response reads.** `httpx.PostJSON` reads at most 1 MiB.
+5. **Cap response reads.** `httpx.Post` reads at most 1 MiB.
 6. **Handle length limits predictably.** Truncate with `…` (or return `Permanent`) and document which.
 7. **Use `msg.ID`** as the provider's idempotency key when the API has one. It is stable across retries.
 8. **Treat `msg.Data` as read-only.** It is shared between channels.
@@ -40,7 +40,7 @@ For one-offs, wrap a function: `pigeon.ChannelFunc(func(ctx, msg) error { ... })
 - A real-service test goes in `integration_test.go` behind `//go:build integration`, reads credentials from env vars, and skips when they're missing. Run it with `make test-integration`.
 - Add a package doc and a runnable `Example`.
 
-[`channel/telegram`](../channel/telegram) is the reference implementation.
+[`channel/telegram`](../channel/telegram) is the reference implementation, and [`channel/ntfy`](../channel/ntfy) is the smallest. In-tree adapters share `internal/httpx` (requests, classification, redaction) and `internal/truncate` (length limits), and test against `internal/fakehttp`.
 
 ## Dependencies
 

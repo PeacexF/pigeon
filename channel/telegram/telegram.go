@@ -20,10 +20,10 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf16"
 
 	"github.com/PeacexF/pigeon"
 	"github.com/PeacexF/pigeon/internal/httpx"
+	"github.com/PeacexF/pigeon/internal/truncate"
 )
 
 const (
@@ -149,7 +149,7 @@ func (c *Channel) Send(ctx context.Context, msg *pigeon.Message) error {
 	}
 	req := sendMessageRequest{
 		ChatID:              c.chatID,
-		Text:                truncate(text, MaxTextLen),
+		Text:                truncate.UTF16(text, MaxTextLen),
 		ParseMode:           c.parseMode,
 		DisableNotification: c.silent,
 		MessageThreadID:     c.threadID,
@@ -158,7 +158,7 @@ func (c *Channel) Send(ctx context.Context, msg *pigeon.Message) error {
 		req.LinkPreviewOptions = &linkPreviewOptions{IsDisabled: true}
 	}
 
-	res, err := httpx.PostJSON(ctx, c.client, c.baseURL+"/bot"+c.token+"/sendMessage", req, c.token)
+	res, err := httpx.PostJSON(ctx, c.client, c.baseURL+"/bot"+c.token+"/sendMessage", nil, req, c.token)
 	if err != nil {
 		return fmt.Errorf("telegram: %w", err)
 	}
@@ -181,29 +181,6 @@ func (c *Channel) Send(ctx context.Context, msg *pigeon.Message) error {
 		return pigeon.RetryAfter(err, time.Duration(body.Parameters.RetryAfter)*time.Second)
 	}
 	return httpx.Classify(res.StatusCode, res.Header, err)
-}
-
-func truncate(s string, limit int) string {
-	if utf16Len(s) <= limit {
-		return s
-	}
-	n := 0
-	for i, r := range s {
-		w := max(utf16.RuneLen(r), 1)
-		if n+w > limit-1 { // leave room for the ellipsis
-			return s[:i] + "…"
-		}
-		n += w
-	}
-	return s
-}
-
-func utf16Len(s string) int {
-	n := 0
-	for _, r := range s {
-		n += max(utf16.RuneLen(r), 1)
-	}
-	return n
 }
 
 var htmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")

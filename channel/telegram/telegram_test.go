@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/PeacexF/pigeon"
 )
@@ -181,24 +182,14 @@ func TestDefaultRate(t *testing.T) {
 	}
 }
 
-func TestTruncate(t *testing.T) {
-	if got := truncate("short", MaxTextLen); got != "short" {
-		t.Errorf("short text changed: %q", got)
+func TestSendTruncates(t *testing.T) {
+	api := newFakeAPI(t, http.StatusOK, `{"ok":true}`)
+	if err := api.channel().Send(t.Context(), &pigeon.Message{Text: strings.Repeat("😀", MaxTextLen)}); err != nil {
+		t.Fatal(err)
 	}
-	exact := strings.Repeat("a", MaxTextLen)
-	if got := truncate(exact, MaxTextLen); got != exact {
-		t.Error("text at the limit was truncated")
-	}
-
-	long := truncate(strings.Repeat("a", 5000), MaxTextLen)
-	if utf16Len(long) != MaxTextLen || !strings.HasSuffix(long, "…") {
-		t.Errorf("long text: %d UTF-16 units, suffix %q", utf16Len(long), long[len(long)-3:])
-	}
-
-	// 😀 is two UTF-16 units: an odd limit must not split it.
-	emoji := truncate(strings.Repeat("😀", 10), 6)
-	if emoji != "😀😀…" {
-		t.Errorf("emoji truncation = %q", emoji)
+	text, _ := api.body["text"].(string)
+	if n := len(utf16.Encode([]rune(text))); n > MaxTextLen || !strings.HasSuffix(text, "…") {
+		t.Errorf("sent %d UTF-16 units, suffix %q", n, text[len(text)-3:])
 	}
 }
 

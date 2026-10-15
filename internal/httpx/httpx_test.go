@@ -18,6 +18,9 @@ func TestPostJSON(t *testing.T) {
 		if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" {
 			t.Errorf("got %s with Content-Type %q", r.Method, r.Header.Get("Content-Type"))
 		}
+		if r.Header.Get("X-Custom") != "v" || r.Header.Get("User-Agent") != UserAgent {
+			t.Errorf("headers = %v", r.Header)
+		}
 		body, _ := io.ReadAll(r.Body)
 		if string(body) != `{"a":1}` {
 			t.Errorf("body = %s", body)
@@ -28,7 +31,7 @@ func TestPostJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res, err := PostJSON(t.Context(), srv.Client(), srv.URL, map[string]int{"a": 1})
+	res, err := PostJSON(t.Context(), srv.Client(), srv.URL, http.Header{"X-Custom": {"v"}}, map[string]int{"a": 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +46,7 @@ func TestPostJSONCapsBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res, err := PostJSON(t.Context(), srv.Client(), srv.URL, nil)
+	res, err := PostJSON(t.Context(), srv.Client(), srv.URL, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +61,7 @@ func TestPostJSONRedactsSecrets(t *testing.T) {
 	url := srv.URL + "/bot" + secret + "/send"
 	srv.Close()
 
-	_, err := PostJSON(t.Context(), http.DefaultClient, url, nil, secret)
+	_, err := PostJSON(t.Context(), http.DefaultClient, url, nil, nil, secret)
 	if err == nil {
 		t.Fatal("request to a closed server succeeded")
 	}
@@ -66,14 +69,14 @@ func TestPostJSONRedactsSecrets(t *testing.T) {
 		t.Errorf("err = %q", err)
 	}
 
-	_, err = PostJSON(t.Context(), http.DefaultClient, "http://bad host/"+secret, nil, secret)
+	_, err = PostJSON(t.Context(), http.DefaultClient, "http://bad host/"+secret, nil, nil, secret)
 	if err == nil || strings.Contains(err.Error(), secret) {
 		t.Errorf("invalid URL err = %v", err)
 	}
 }
 
 func TestPostJSONEncodeError(t *testing.T) {
-	if _, err := PostJSON(t.Context(), http.DefaultClient, "http://example.invalid", make(chan int)); err == nil {
+	if _, err := PostJSON(t.Context(), http.DefaultClient, "http://example.invalid", nil, make(chan int)); err == nil {
 		t.Error("unencodable payload accepted")
 	}
 }
@@ -83,7 +86,7 @@ func TestPostJSONHonorsContext(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := PostJSON(ctx, srv.Client(), srv.URL, nil, "x"); !errors.Is(err, context.Canceled) {
+	if _, err := PostJSON(ctx, srv.Client(), srv.URL, nil, nil, "x"); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }

@@ -20,6 +20,9 @@ import (
 // and an unbounded read lets a misbehaving endpoint exhaust memory.
 const MaxBody = 1 << 20
 
+// UserAgent is sent unless the caller sets its own.
+const UserAgent = "pigeon (+https://github.com/PeacexF/pigeon)"
+
 // Response is a fully read HTTP response.
 type Response struct {
 	StatusCode int
@@ -27,19 +30,35 @@ type Response struct {
 	Body       []byte
 }
 
-// PostJSON sends payload as JSON and reads up to MaxBody of the response.
-// Every secret is redacted from returned errors, since request errors
-// include the URL and adapters often carry tokens in it.
-func PostJSON(ctx context.Context, client *http.Client, url string, payload any, secrets ...string) (*Response, error) {
+// PostJSON sends payload as JSON with the extra header, which may be nil.
+// See Post.
+func PostJSON(ctx context.Context, client *http.Client, url string, header http.Header, payload any, secrets ...string) (*Response, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("encode request: %w", err)
 	}
+	h := header.Clone()
+	if h == nil {
+		h = http.Header{}
+	}
+	h.Set("Content-Type", "application/json")
+	return Post(ctx, client, url, h, body, secrets...)
+}
+
+// Post sends body with header and reads up to MaxBody of the response.
+// Every secret is redacted from returned errors, since request errors
+// include the URL and adapters often carry tokens in it.
+func Post(ctx context.Context, client *http.Client, url string, header http.Header, body []byte, secrets ...string) (*Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, Redact(err, secrets...)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", UserAgent)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {

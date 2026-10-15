@@ -11,35 +11,40 @@ import (
 	"time"
 
 	"github.com/PeacexF/pigeon/internal/backoff"
-	"github.com/PeacexF/pigeon/internal/dedupe"
 	"github.com/PeacexF/pigeon/internal/id"
-	"github.com/PeacexF/pigeon/internal/memqueue"
 	"github.com/PeacexF/pigeon/internal/ratelimit"
 	"github.com/PeacexF/pigeon/internal/render"
 	"github.com/PeacexF/pigeon/internal/route"
 )
 
-const maxDedupeKeys = 100_000
-
 // Gateway routes events to channels and delivers them in the background,
 // with retries, rate limiting and deduplication. It is safe for concurrent use.
 //
-// Delivery is at-least-once while the process runs. Deliveries still pending
-// when the process exits without Close are lost.
+// With the default in-memory queue, delivery is at-least-once while the
+// process runs, and deliveries still pending when the process exits without
+// Close are lost. A durable Queue (see WithQueue) keeps them across restarts.
 type Gateway struct {
 	channels       []*channelState
+	byName         map[string]*channelState
 	routes         route.Table[*channelState]
 	templates      render.Registry
-	dedupe         *dedupe.Window
+	dedupeWindow   time.Duration
 	hooks          Hooks
 	logger         *slog.Logger
 	attemptTimeout time.Duration
 
-	queue   *memqueue.Queue[*job]
-	runCtx  context.Context // cancels workers and in-flight attempts on Close
-	stop    context.CancelFunc
-	workers sync.WaitGroup
-	closed  atomic.Bool
+	queue       Queue
+	dequeueCtx  context.Context // ends when Close stops taking new jobs
+	stopDequeue context.CancelFunc
+	runCtx      context.Context // ends when Close gives up on in-flight attempts
+	stop        context.CancelFunc
+	workers     sync.WaitGroup
+	closed      atomic.Bool
+}
+
+// drainer is implemented by queues that lose jobs on exit, so Close waits for them.
+type drainer interface {
+	drain(ctx context.Context) (pending int, err error)
 }
 
 type channelState struct {
@@ -47,12 +52,6 @@ type channelState struct {
 	ch      Channel
 	limiter *ratelimit.Limiter
 	retry   RetryPolicy
-}
-
-type job struct {
-	msg      Message
-	ch       *channelState
-	attempts int
 }
 
 // New builds a Gateway and starts its workers. It fails if the configuration
@@ -71,18 +70,22 @@ func New(opts ...Option) (*Gateway, error) {
 	if len(cfg.routes) == 0 {
 		errs = append(errs, errors.New("pigeon: no routes configured"))
 	}
-	if cfg.queueSize < len(cfg.channels) {
+	switch {
+	case cfg.queue != nil && cfg.queueSizeSet:
+		errs = append(errs, errors.New("pigeon: WithQueueSize applies only to the in-memory queue, not with WithQueue"))
+	case cfg.queue == nil && cfg.queueSize < len(cfg.channels):
 		errs = append(errs, fmt.Errorf("pigeon: queue size %d is smaller than the %d channels an event may fan out to", cfg.queueSize, len(cfg.channels)))
 	}
 
 	g := &Gateway{
-		dedupe:         dedupe.New(cfg.dedupeWindow, maxDedupeKeys),
+		dedupeWindow:   cfg.dedupeWindow,
 		hooks:          cfg.hooks,
 		logger:         cfg.logger,
 		attemptTimeout: cfg.attemptTimeout,
 	}
 
 	byName := make(map[string]*channelState, len(cfg.channels))
+	g.byName = byName
 	broken := make(map[string]bool) // already reported; don't also report every route that names them
 	for _, spec := range cfg.channels {
 		cs, err := buildChannel(spec, cfg.retry)
@@ -141,8 +144,12 @@ func New(opts ...Option) (*Gateway, error) {
 		return nil, err
 	}
 
-	g.queue = memqueue.New[*job](cfg.queueSize)
+	g.queue = cfg.queue
+	if g.queue == nil {
+		g.queue = newMemQueue(cfg.queueSize)
+	}
 	g.runCtx, g.stop = context.WithCancel(context.Background())
+	g.dequeueCtx, g.stopDequeue = context.WithCancel(g.runCtx)
 	for range cfg.workers {
 		g.workers.Go(g.work)
 	}
@@ -224,34 +231,33 @@ func (g *Gateway) Send(ctx context.Context, e Event) (string, error) {
 		return "", fmt.Errorf("%w %q", ErrNoRoute, e.Type)
 	}
 
-	jobs := make([]*job, 0, len(targets))
+	jobs := make([]*Job, 0, len(targets))
 	names := make([]string, 0, len(targets))
 	for _, cs := range targets {
 		msg, err := g.render(e, cs.name)
 		if err != nil {
 			return "", err
 		}
-		jobs = append(jobs, &job{msg: msg, ch: cs})
+		jobs = append(jobs, &Job{Message: msg})
 		names = append(names, cs.name)
 	}
 
-	if e.IdempotencyKey != "" {
-		if holder, ok := g.dedupe.Reserve(e.IdempotencyKey, e.ID, time.Now()); !ok {
-			if g.hooks.OnDuplicate != nil {
-				g.hooks.OnDuplicate(ctx, e, holder)
-			}
-			return holder, fmt.Errorf("%w %q: already used by event %s", ErrDuplicate, e.IdempotencyKey, holder)
+	holder, err := g.queue.Enqueue(ctx, Batch{
+		EventID:        e.ID,
+		IdempotencyKey: e.IdempotencyKey,
+		IdempotencyTTL: g.dedupeWindow,
+		Jobs:           jobs,
+	})
+	switch {
+	case errors.Is(err, ErrDuplicate):
+		if g.hooks.OnDuplicate != nil {
+			g.hooks.OnDuplicate(ctx, e, holder)
 		}
-	}
-
-	if err := g.queue.Put(ctx, jobs...); err != nil {
-		if e.IdempotencyKey != "" {
-			g.dedupe.Release(e.IdempotencyKey, e.ID)
-		}
-		if errors.Is(err, memqueue.ErrClosed) {
-			return "", ErrClosed
-		}
-		return "", err
+		return holder, fmt.Errorf("%w %q: already used by event %s", ErrDuplicate, e.IdempotencyKey, holder)
+	case errors.Is(err, ErrClosed):
+		return "", ErrClosed
+	case err != nil:
+		return "", fmt.Errorf("pigeon: enqueue: %w", err)
 	}
 
 	if g.hooks.OnEnqueue != nil {
@@ -276,24 +282,41 @@ func (g *Gateway) render(e Event, channel string) (Message, error) {
 	}, nil
 }
 
-// Close stops accepting events and waits for queued deliveries, including
-// pending retries, until they finish or ctx is done. It then stops the
-// workers and closes every channel that implements io.Closer. If ctx ends
-// first, the remaining deliveries are dropped and the error wraps ctx.Err().
+// Close stops accepting events and shuts the Gateway down. With the
+// default in-memory queue, it first waits for queued deliveries, including
+// pending retries, until they finish or ctx is done; with a durable queue
+// they stay queued for the next run. Close then lets in-flight attempts
+// finish until ctx is done, stops the workers, closes the queue, and closes
+// every channel that implements io.Closer. If ctx ends first, the remaining
+// in-memory deliveries are dropped and the error wraps ctx.Err().
 // Calling Close again returns ErrClosed.
 func (g *Gateway) Close(ctx context.Context) error {
 	if !g.closed.CompareAndSwap(false, true) {
 		return ErrClosed
 	}
-	g.queue.Close()
-	pending, waitErr := g.queue.Wait(ctx)
-	g.stop()
-	g.queue.Stop()
-	g.workers.Wait()
-
 	var errs []error
-	if waitErr != nil {
-		errs = append(errs, fmt.Errorf("pigeon: close: %d deliveries dropped: %w", pending, waitErr))
+	if d, ok := g.queue.(drainer); ok {
+		if pending, err := d.drain(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("pigeon: close: %d deliveries dropped: %w", pending, err))
+		}
+	}
+
+	g.stopDequeue()
+	stopped := make(chan struct{})
+	go func() {
+		g.workers.Wait()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-ctx.Done():
+		g.stop()
+		<-stopped
+	}
+	g.stop()
+
+	if err := g.queue.Close(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("pigeon: close queue: %w", err))
 	}
 	for _, cs := range g.channels {
 		if c, ok := cs.ch.(io.Closer); ok {
@@ -306,33 +329,60 @@ func (g *Gateway) Close(ctx context.Context) error {
 }
 
 func (g *Gateway) work() {
-	for {
-		j, err := g.queue.Get(g.runCtx)
-		if err != nil {
+	failures := 0
+	for g.dequeueCtx.Err() == nil {
+		j, err := g.queue.Dequeue(g.dequeueCtx)
+		if g.dequeueCtx.Err() != nil {
+			if j != nil {
+				g.putBack(j)
+			}
 			return
 		}
+		if err != nil {
+			// A durable queue can fail, e.g. while its database restarts.
+			failures++
+			g.logger.Error("pigeon: dequeue", "err", err)
+			t := time.NewTimer(backoff.FullJitter(failures, 100*time.Millisecond, 10*time.Second))
+			select {
+			case <-t.C:
+			case <-g.dequeueCtx.Done():
+				t.Stop()
+				return
+			}
+			continue
+		}
+		failures = 0
 		g.deliver(j)
 	}
 }
 
-func (g *Gateway) deliver(j *job) {
-	if wait := j.ch.limiter.Take(time.Now()); wait > 0 {
-		g.queue.Later(j, wait)
+func (g *Gateway) deliver(j *Job) {
+	cs := g.byName[j.Message.Channel]
+	if cs == nil {
+		// Only a durable queue can hold jobs for a channel that is no longer configured.
+		err := Permanent(fmt.Errorf("pigeon: channel %q is not configured", j.Message.Channel))
+		g.deadLetter(g.runCtx, j, &j.Message, err)
+		return
+	}
+	if wait := cs.limiter.Take(time.Now()); wait > 0 {
+		g.queueOp("retry", g.queue.Retry(g.runCtx, j, time.Now().Add(wait), nil))
 		return
 	}
 
-	j.attempts++
-	msg := j.msg
-	msg.Attempt = j.attempts
+	j.Attempts++
+	msg := j.Message
+	msg.Attempt = j.Attempts
 
 	ctx, cancel := context.WithTimeout(g.runCtx, g.attemptTimeout)
 	defer cancel()
 	start := time.Now()
-	err := j.ch.ch.Send(ctx, &msg)
+	err := cs.ch.Send(ctx, &msg)
 	took := time.Since(start)
 
 	if err != nil && g.runCtx.Err() != nil {
-		return // cut short by Close; reported as dropped
+		j.Attempts-- // cut short by Close, so it doesn't count
+		g.putBack(j)
+		return
 	}
 	if g.hooks.OnAttempt != nil {
 		g.hooks.OnAttempt(ctx, &msg, err, took)
@@ -342,25 +392,46 @@ func (g *Gateway) deliver(j *job) {
 	switch {
 	case err == nil:
 		log.Debug("pigeon: delivered", "took", took)
+		g.queueOp("complete", g.queue.Complete(g.runCtx, j))
 		if g.hooks.OnDelivered != nil {
 			g.hooks.OnDelivered(ctx, &msg)
 		}
-		g.queue.Done()
 
-	case IsPermanent(err) || j.attempts >= j.ch.retry.MaxAttempts:
-		log.Warn("pigeon: dead letter", "err", err, "permanent", IsPermanent(err))
-		if g.hooks.OnDeadLetter != nil {
-			g.hooks.OnDeadLetter(ctx, &msg, err)
-		}
-		g.queue.Done()
+	case IsPermanent(err) || j.Attempts >= cs.retry.MaxAttempts:
+		g.deadLetter(ctx, j, &msg, err)
 
 	default:
-		delay := backoff.FullJitter(j.attempts, j.ch.retry.BaseDelay, j.ch.retry.MaxDelay)
+		delay := backoff.FullJitter(j.Attempts, cs.retry.BaseDelay, cs.retry.MaxDelay)
 		if ra, ok := RetryAfterDelay(err); ok {
-			j.ch.limiter.Pause(time.Now().Add(ra))
+			cs.limiter.Pause(time.Now().Add(ra))
 			delay = max(delay, ra)
 		}
 		log.Debug("pigeon: retrying", "err", err, "in", delay)
-		g.queue.Later(j, delay)
+		g.queueOp("retry", g.queue.Retry(g.runCtx, j, time.Now().Add(delay), err))
+	}
+}
+
+func (g *Gateway) deadLetter(ctx context.Context, j *Job, msg *Message, err error) {
+	g.logger.Warn("pigeon: dead letter", "event_id", msg.EventID, "event_type", msg.EventType,
+		"channel", msg.Channel, "attempt", msg.Attempt, "err", err, "permanent", IsPermanent(err))
+	g.queueOp("bury", g.queue.Bury(g.runCtx, j, err))
+	if g.hooks.OnDeadLetter != nil {
+		g.hooks.OnDeadLetter(ctx, msg, err)
+	}
+}
+
+// putBack returns a job taken during shutdown to the queue, so a durable
+// queue hands it out again without waiting for its lease to expire.
+func (g *Gateway) putBack(j *Job) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(g.runCtx), 5*time.Second)
+	defer cancel()
+	g.queueOp("retry", g.queue.Retry(ctx, j, time.Now(), nil))
+}
+
+// queueOp logs a failed queue operation. A durable queue hands the job out
+// again once its lease expires, so the delivery isn't lost.
+func (g *Gateway) queueOp(op string, err error) {
+	if err != nil {
+		g.logger.Error("pigeon: queue "+op, "err", err)
 	}
 }

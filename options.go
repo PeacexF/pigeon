@@ -29,6 +29,8 @@ type config struct {
 	retry          RetryPolicy
 	workers        int
 	queueSize      int
+	queueSizeSet   bool
+	queue          Queue
 	dedupeWindow   time.Duration
 	attemptTimeout time.Duration
 	logger         *slog.Logger
@@ -168,8 +170,9 @@ func WithWorkers(n int) Option {
 	}
 }
 
-// WithQueueSize bounds how many deliveries may be unfinished at once, counting
-// queued, retrying and in-flight ones. When full, Send blocks. The default is 1024.
+// WithQueueSize bounds how many deliveries the in-memory queue holds,
+// counting queued, retrying and in-flight ones. When full, Send blocks.
+// The default is 1024. It can't be combined with WithQueue.
 func WithQueueSize(n int) Option {
 	return func(c *config) {
 		if n < 1 {
@@ -177,6 +180,20 @@ func WithQueueSize(n int) Option {
 			return
 		}
 		c.queueSize = n
+		c.queueSizeSet = true
+	}
+}
+
+// WithQueue replaces the in-memory queue, for example with a durable one so
+// that deliveries survive restarts. Idempotency keys are then checked by q,
+// for the window set with WithDedupeWindow.
+func WithQueue(q Queue) Option {
+	return func(c *config) {
+		if q == nil {
+			c.fail(errors.New("nil Queue"))
+			return
+		}
+		c.queue = q
 	}
 }
 

@@ -10,6 +10,17 @@ While the version is `v0.x`, minor releases may contain breaking changes; each o
 
 ### Added
 
+- `channel/discord`: webhook adapter. A title becomes an embed. Text is cut at Discord's limits, mentions are off unless `WithMentions` is set, and the adapter follows Discord's rate-limit bucket headers. Includes `EscapeMarkdown`.
+- `channel/slack`: incoming webhook (`New`) and bot-token `chat.postMessage` (`NewBot`) modes. A title becomes a header block. Includes `Escape` for mrkdwn.
+- `channel/webhook`: generic JSON POST with `Idempotency-Key`, optional HMAC-SHA256 signing (`WithSecret`, `Verify`) and custom headers. It refuses internal addresses at connect time (`WithAllowPrivate` to opt out) and doesn't follow redirects.
+- `channel/smtp`: email over STARTTLS (default), implicit TLS or plaintext, with PLAIN/LOGIN auth, an optional HTML part (`WithHTML`) and a stable `Message-ID`. 5xx replies are permanent and 4xx replies are retried.
+- `channel/ntfy`: publish to ntfy.sh or a self-hosted server, with priority, tags, click URL, icon, Markdown, and token or basic auth.
+- ADR 4: the webhook channel's protection against requests to internal addresses (SSRF).
+
+## [0.1.0] - Unreleased
+
+### Added
+
 - `Gateway` with `New`, `Send` and `Close`: route events to channels, render them with templates, and deliver them in the background.
 - Routing with `*` patterns (`WithRoute`); `Send` returns `ErrNoRoute` for unrouted events.
 - `text/template` rendering (`WithTemplate`, `Title`, `For`, `WithTemplateFuncs`) with a default for events without a template.

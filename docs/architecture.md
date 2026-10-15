@@ -35,7 +35,10 @@ The root package is the public API only. Everything else is internal and tested 
 | `internal/ratelimit` | Non-blocking token bucket with pause |
 | `internal/backoff` | Full-jitter exponential backoff |
 | `internal/id` | UUIDv7 event IDs |
-| `internal/httpx` | JSON POST, capped reads, status classification, secret redaction |
+| `internal/httpx` | HTTP POST, capped reads, status classification, secret redaction |
+| `internal/truncate` | Cutting text to a provider's limit, in characters, UTF-16 units or bytes |
+| `internal/ssrf` | Dial-time refusal of non-public addresses for the webhook channel |
+| `internal/fakehttp` | Recording HTTP server for adapter tests |
 | `channel/*` | Adapters (stdlib only) |
 | `pigeontest` | Test helpers for users |
 
